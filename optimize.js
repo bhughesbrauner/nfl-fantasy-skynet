@@ -270,6 +270,146 @@ async function verify(moves, period) {
   return false;
 }
 
+// ---------------------------------------------------------------------------
+// Lineup gaps and suggestions
+// ---------------------------------------------------------------------------
+
+// A gap is a starter spot with no eligible player left, or a starter who projects 0 points
+// (bye, injury, or no projection yet). A gap fails the run so the job's failure email says which spot.
+function findGaps(players, assignments, lineupSlotCounts) {
+  const gaps = [];
+  for (const [id, count] of Object.entries(lineupSlotCounts)) {
+    const slot = Number(id);
+    if (slot === BENCH || slot === IR || count <= 0) continue;
+    const filled = players.filter((p) => assignments.get(p.id) === slot);
+    for (let i = filled.length; i < count; i++) {
+      gaps.push({ slot, reason: "no eligible player is left for this spot" });
+    }
+    for (const p of filled) {
+      if (p.projectedPoints === 0) {
+        gaps.push({ slot, player: p, reason: `${p.name} projects 0 points (bye, injury, or no projection)` });
+      }
+    }
+  }
+  return gaps;
+}
+
+function formatGap(gap) {
+  return `${slotName(gap.slot)}: ${gap.reason}`;
+}
+
+// Turns ESPN kona_player_info entries into the fields the suggestions use.
+// Ownership values are percentages (15.3 means 15.3%).
+function normalizeKonaPlayers(entries, period) {
+  return (entries || []).map((e) => {
+    const p = e.player || {};
+    return {
+      id: p.id ?? e.id,
+      name: p.fullName,
+      eligibleSlots: p.eligibleSlots || [],
+      projectedPoints: getProjectedPoints(p, period),
+      percentOwned: p.ownership?.percentOwned,
+      percentStarted: p.ownership?.percentStarted,
+    };
+  });
+}
+
+// Free agents (and waiver players) who can fill a slot, highest projection first.
+function rankFreeAgents(agents, slot, limit = 3) {
+  return agents
+    .filter((a) => a.eligibleSlots.includes(slot))
+    .sort((x, y) => y.projectedPoints - x.projectedPoints)
+    .slice(0, limit);
+}
+
+// Bench players to consider dropping. Not starting, not on IR, not locked.
+// Lowest % started first, then lowest % owned, then lowest projection.
+function rankDropCandidates(roster, assignments, lockedIds, ownershipById, limit = 3) {
+  const unknown = Infinity;
+  return roster
+    .filter((p) => !assignments.has(p.id) && p.currentSlot !== IR && !lockedIds.has(p.id))
+    .map((p) => {
+      const o = ownershipById.get(p.id) || {};
+      return {
+        id: p.id,
+        name: p.name,
+        percentStarted: o.percentStarted,
+        percentOwned: o.percentOwned,
+        projectedPoints: p.projectedPoints,
+      };
+    })
+    .sort(
+      (a, b) =>
+        (a.percentStarted ?? unknown) - (b.percentStarted ?? unknown) ||
+        (a.percentOwned ?? unknown) - (b.percentOwned ?? unknown) ||
+        a.projectedPoints - b.projectedPoints,
+    )
+    .slice(0, limit);
+}
+
+// Free agents and waivers are the default filter. Filter values and response shape follow the
+// layout used by the fflr R package (kona_player_info). Not verified against a live ESPN response.
+const FA_STATUSES = ["FREEAGENT", "WAIVERS"];
+const KONA_URL = `https://lm-api-reads.fantasy.espn.com/apis/v3/games/ffl/seasons/${SEASON_ID}/segments/0/leagues/${LEAGUE_ID}`;
+
+async function fetchKona(filter, period) {
+  const { data } = await axios.get(KONA_URL, {
+    headers: headers({ "X-Fantasy-Filter": JSON.stringify({ players: filter }) }),
+    params: { view: "kona_player_info", scoringPeriodId: period },
+  });
+  return data.players || [];
+}
+
+async function fetchFreeAgents(slot, period) {
+  const entries = await fetchKona(
+    {
+      filterStatus: { value: FA_STATUSES },
+      filterSlotIds: { value: [slot] },
+      limit: 50,
+      sortPercOwned: { sortPriority: 1, sortAsc: false },
+    },
+    period,
+  );
+  return normalizeKonaPlayers(entries, period);
+}
+
+// Ownership for specific roster players, keyed by player id.
+async function fetchOwnership(ids, period) {
+  const entries = await fetchKona({ filterIds: { value: ids }, limit: ids.length }, period);
+  return new Map(normalizeKonaPlayers(entries, period).map((p) => [p.id, p]));
+}
+
+const pct = (v) => (v === undefined || v === null ? "n/a" : `${Number(v).toFixed(1)}%`);
+
+// Prints pickup and drop suggestions for the gaps. Lookup failures are reported, not fatal.
+async function printSuggestions(gaps, team, assignments, frozenIds, period) {
+  console.log("\n=== SUGGESTIONS ===");
+  const slots = [...new Set(gaps.map((g) => g.slot))];
+  for (const slot of slots) {
+    try {
+      const best = rankFreeAgents(await fetchFreeAgents(slot, period), slot);
+      if (best.length === 0) {
+        console.log(`Pickup for ${slotName(slot)}: no free agent or waiver player is eligible.`);
+      }
+      best.forEach((a) =>
+        console.log(`Pickup for ${slotName(slot)}: ${a.name} (${a.projectedPoints.toFixed(1)} pts, ${pct(a.percentOwned)} owned)`),
+      );
+    } catch (error) {
+      console.log(`Pickup lookup for ${slotName(slot)} failed: ${error.message}`);
+    }
+  }
+  try {
+    const ownership = await fetchOwnership(team.players.map((p) => p.id), period);
+    const drops = rankDropCandidates(team.players, assignments, frozenIds, ownership);
+    drops.forEach((d) =>
+      console.log(`Drop candidate: ${d.name} (${pct(d.percentStarted)} started, ${pct(d.percentOwned)} owned, ${d.projectedPoints.toFixed(1)} pts)`),
+    );
+    if (drops.length === 0) console.log("Drop candidate: none (no unlocked bench players).");
+  } catch (error) {
+    console.log(`Drop lookup failed: ${error.message}`);
+  }
+}
+
 async function main() {
   if (!LEAGUE_ID || !TEAM_ID || !SWID || !ESPN_S2) {
     throw new Error("Missing LEAGUE_ID, TEAM_ID, SWID or ESPN_S2 in .env");
@@ -347,21 +487,32 @@ async function main() {
   console.log(`\nMoves needed: ${moves.length}`);
   moves.forEach((m) => console.log(`  ${m.name.padEnd(25)} ${slotName(m.fromSlot)} -> ${slotName(m.toSlot)}`));
 
+  // Gaps are checked in every mode. The best lineup is still written first, then the run fails.
+  const gaps = findGaps(team.players, assignments, team.lineupSlotCounts);
+  if (gaps.length > 0) await printSuggestions(gaps, team, assignments, frozenIds, period);
+
   if (moves.length === 0) {
     console.log("\nLineup already matches the optimum. Nothing to send.");
-    return;
-  }
-
-  if (!WRITE) {
+  } else if (!WRITE) {
     console.log("\nDry run. Nothing sent. Add --write to set this lineup in ESPN.");
     console.log("\nRequest body that would be sent:");
     console.log(JSON.stringify(buildLineupBody(moves, period), null, 2));
-    return;
+  } else {
+    await sendMoves(moves, period);
+    const ok = await verify(moves, period);
+    if (!ok) process.exitCode = 1;
   }
 
-  await sendMoves(moves, period);
-  const ok = await verify(moves, period);
-  if (!ok) process.exitCode = 1;
+  if (gaps.length > 0) {
+    console.error(`\nLineup has ${gaps.length} problem spot(s):`);
+    for (const gap of gaps) {
+      const message = formatGap(gap);
+      console.error(`  ${message}`);
+      // GitHub shows these as annotations on the failed run.
+      console.log(`::error title=Lineup gap::${message}`);
+    }
+    process.exitCode = 1;
+  }
 }
 
 if (require.main === module) {
@@ -391,5 +542,12 @@ module.exports = {
   lockedTeamIds,
   kickoffInWindow,
   verify,
+  findGaps,
+  formatGap,
+  normalizeKonaPlayers,
+  rankFreeAgents,
+  rankDropCandidates,
+  fetchFreeAgents,
+  fetchOwnership,
   main,
 };

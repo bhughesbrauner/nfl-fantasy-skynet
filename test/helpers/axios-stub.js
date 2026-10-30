@@ -22,6 +22,10 @@ function install(fixture) {
         if (fixture.scoreboardError) throw new Error(fixture.scoreboardError);
         return { data: { events: fixture.events || [] } };
       }
+      if (opts.params && opts.params.view === "kona_player_info") {
+        if (fixture.konaError) throw new Error(fixture.konaError);
+        return { data: { players: fixture.kona || [] } };
+      }
       if (url.includes("lm-api-reads")) {
         const seq = fixture.rosters || [];
         if (seq.length === 0) throw new Error("fixture has no rosters");
