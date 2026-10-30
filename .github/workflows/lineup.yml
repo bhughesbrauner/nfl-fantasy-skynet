@@ -34,9 +34,14 @@ jobs:
       - run: npm ci
 
       - name: Set lineup
+        env:
+          EVENT: ${{ github.event_name }}
+          DRY_RUN: ${{ inputs.dry_run }}
         run: |
-          if [ "${{ inputs.dry_run }}" = "true" ]; then
-            node optimize.js
+          if [ "$EVENT" = "schedule" ]; then
+            node optimize.js --auto          # only acts inside a kickoff window
+          elif [ "$DRY_RUN" = "true" ]; then
+            node optimize.js                 # manual: print the plan, send nothing
           else
-            node optimize.js --auto
+            node optimize.js --write         # manual: set the lineup now
           fi

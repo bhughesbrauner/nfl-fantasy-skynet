@@ -36,15 +36,18 @@ async function main() {
   if (upcoming.length === 0) console.log("No upcoming games. Writing placeholder schedule.");
 
   const original = fs.readFileSync(WORKFLOW, "utf8");
+  const begin = /^    # BEGIN generated schedule$/m;
+  const end = /^    # END generated schedule$/m;
+  if (!begin.test(original) || !end.test(original)) {
+    throw new Error(`BEGIN/END schedule markers not found in ${WORKFLOW}. Refusing to guess where the cron lines go.`);
+  }
+
   const body = lines.map((c) => `    - cron: "${c}"`).join("\n") + "\n";
   const updated = original.replace(
-    /(    # BEGIN generated schedule\n)[\s\S]*?(    # END generated schedule)/,
+    /(^    # BEGIN generated schedule\n)[\s\S]*?(^    # END generated schedule$)/m,
     `$1${body}$2`,
   );
 
-  if (updated === original && !original.includes(body)) {
-    throw new Error(`Markers not found in ${WORKFLOW}`);
-  }
   if (updated === original) {
     console.log("Schedule unchanged.");
     return;

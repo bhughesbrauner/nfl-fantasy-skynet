@@ -6,7 +6,10 @@ const axios = require("axios");
 //   node optimize.js --write      also sends the moves to ESPN, then re-reads the roster to check them
 //   node optimize.js --period=5   optimizes for scoring period 5 instead of ESPN's current period
 //   node optimize.js --auto       for the scheduled workflow: exits unless a game kicks off within the
-//                                 next 60 minutes, then writes (same as --write)
+//                                 next 75 minutes, then writes (same as --write)
+//
+// Players whose NFL team has a game in progress or finished are locked. They stay in their current
+// slot and the rest of the lineup is optimized around them.
 
 const AUTO = process.argv.includes("--auto");
 const WRITE = AUTO || process.argv.includes("--write");
@@ -17,7 +20,11 @@ const LEAGUE_ID = process.env.LEAGUE_ID;
 const ESPN_S2 = process.env.ESPN_S2;
 const SWID = process.env.SWID;
 const TEAM_ID = process.env.TEAM_ID;
-const SEASON_ID = new Date().getFullYear();
+
+// ESPN names a season by the year it starts in. The season starts in August (preseason), so
+// January through July still belong to the prior year's season.
+const now0 = new Date();
+const SEASON_ID = now0.getMonth() >= 7 ? now0.getFullYear() : now0.getFullYear() - 1;
 
 // Views go in the URL string. Axios would send an array in `params` as view[]=..., which ESPN ignores.
 // mSettings gives the league's lineup slot counts, so the starter list comes from the league itself.
@@ -25,6 +32,12 @@ const READS_URL = `https://lm-api-reads.fantasy.espn.com/apis/v3/games/ffl/seaso
 // Unverified: the host comes from espn-fantasy-mcp's writes.ts. The HTTP method and
 // path are assumed to be POST to .../transactions/. Confirm against client.ts before using --write.
 const WRITES_URL = `https://lm-api-writes.fantasy.espn.com/apis/v3/games/ffl/seasons/${SEASON_ID}/segments/0/leagues/${LEAGUE_ID}/transactions/`;
+
+// Public ESPN scoreboard for the current NFL week. No auth.
+const SCOREBOARD_URL = "https://site.api.espn.com/apis/site/v2/sports/football/nfl/scoreboard";
+// The planner schedules runs 60 minutes before kickoff (rounded down to 5 minutes), so the window
+// is wider than 60 to cover that rounding and any delay in GitHub starting the run.
+const WINDOW_MINUTES = 75;
 
 const COOKIE = `SWID=${SWID}; espn_s2=${ESPN_S2}`;
 
@@ -73,6 +86,7 @@ async function fetchTeam(period) {
       return {
         id: player.id,
         name: player.fullName,
+        proTeamId: player.proTeamId,
         eligibleSlots: player.eligibleSlots || [],
         currentSlot: entry.lineupSlotId,
         projectedPoints: getProjectedPoints(player, period),
@@ -88,6 +102,39 @@ async function fetchTeam(period) {
   };
 }
 
+async function fetchScoreboard() {
+  const { data } = await axios.get(SCOREBOARD_URL);
+  return data.events || [];
+}
+
+// True when a game has not kicked off yet and starts within WINDOW_MINUTES.
+function kickoffInWindow(events) {
+  const now = Date.now();
+  const soon = events.filter((e) => {
+    if (e.status?.type?.state !== "pre") return false;
+    const minutes = (Date.parse(e.date) - now) / 60000;
+    return minutes > 0 && minutes <= WINDOW_MINUTES;
+  });
+  soon.forEach((e) => {
+    const minutes = Math.round((Date.parse(e.date) - now) / 60000);
+    console.log(`Kickoff in ${minutes} min: ${e.shortName} (${e.date})`);
+  });
+  return soon.length > 0;
+}
+
+// NFL team IDs whose game has started (in progress or final). Their players are locked.
+function lockedTeamIds(events) {
+  const ids = new Set();
+  for (const e of events) {
+    const state = e.status?.type?.state;
+    if (state !== "in" && state !== "post") continue;
+    for (const c of e.competitions?.[0]?.competitors || []) {
+      ids.add(String(c.team?.id));
+    }
+  }
+  return ids;
+}
+
 // One entry per starting slot the league uses, e.g. [0, 2, 2, 3, 4, 23, 16, 17].
 function startingSlots(lineupSlotCounts) {
   const slots = [];
@@ -101,14 +148,14 @@ function startingSlots(lineupSlotCounts) {
 
 // Greedy: fill the most restricted slots first, each with the highest-projected unused eligible player.
 // Restricted first means a flex-eligible player is not used up before a QB or K slot needs him.
-function buildLineup(players, lineupSlotCounts) {
-  const slots = startingSlots(lineupSlotCounts);
-  const candidatesFor = (slot) => players.filter((p) => p.eligibleSlots.includes(slot));
-  slots.sort((a, b) => candidatesFor(a).length - candidatesFor(b).length);
+// Only the players passed in are considered, so the caller decides who can move.
+function buildLineup(movable, slots) {
+  const candidatesFor = (slot) => movable.filter((p) => p.eligibleSlots.includes(slot));
+  const ordered = [...slots].sort((a, b) => candidatesFor(a).length - candidatesFor(b).length);
 
   const used = new Set();
   const assignments = new Map(); // playerId -> slot ID
-  for (const slot of slots) {
+  for (const slot of ordered) {
     const best = candidatesFor(slot)
       .filter((p) => !used.has(p.id))
       .sort((a, b) => b.projectedPoints - a.projectedPoints)[0];
@@ -121,11 +168,11 @@ function buildLineup(players, lineupSlotCounts) {
 }
 
 // Compare the optimal assignments with the roster's current slots and build the moves.
-// IR players stay where they are. Every other player goes to a starting slot or the bench.
-function buildMoves(players, assignments) {
+// IR players and locked players are never moved. Every other player goes to a starter slot or the bench.
+function buildMoves(players, assignments, frozenIds) {
   const moves = [];
   for (const p of players) {
-    if (p.currentSlot === IR) continue;
+    if (p.currentSlot === IR || frozenIds.has(p.id)) continue;
     const target = assignments.get(p.id) ?? BENCH;
     if (p.currentSlot !== target) {
       moves.push({ playerId: p.id, name: p.name, fromSlot: p.currentSlot, toSlot: target });
@@ -196,6 +243,7 @@ async function sendMoves(moves, period) {
   console.log(`ESPN responded with status ${response.status}.`);
 }
 
+// Returns true when every move is on the roster read-back.
 async function verify(moves, period) {
   // ESPN's reads can lag writes, so re-read a few times before reporting a mismatch.
   const delays = [3000, 8000, 15000];
@@ -211,33 +259,11 @@ async function verify(moves, period) {
   }
   if (mismatches.length === 0) {
     console.log("Verified: every move is on the roster read-back.");
-  } else {
-    console.log("Mismatches after re-reading:");
-    mismatches.forEach((m) => console.log(`  ${m}`));
+    return true;
   }
-}
-
-// Public ESPN scoreboard for the current NFL week. No auth.
-const SCOREBOARD_URL = "https://site.api.espn.com/apis/site/v2/sports/football/nfl/scoreboard";
-// The planner schedules runs 60 minutes before kickoff (rounded down to 5 minutes), so the window
-// is wider than 60 to cover that rounding and any delay in GitHub starting the run.
-const WINDOW_MINUTES = 75;
-
-// True when a game has not kicked off yet and starts within WINDOW_MINUTES.
-// Lineup changes only happen in that window, so each week's moves go in before the games lock.
-async function kickoffInWindow() {
-  const { data } = await axios.get(SCOREBOARD_URL);
-  const now = Date.now();
-  const soon = (data.events || []).filter((e) => {
-    if (e.status?.type?.state !== "pre") return false;
-    const minutes = (Date.parse(e.date) - now) / 60000;
-    return minutes > 0 && minutes <= WINDOW_MINUTES;
-  });
-  soon.forEach((e) => {
-    const minutes = Math.round((Date.parse(e.date) - now) / 60000);
-    console.log(`Kickoff in ${minutes} min: ${e.shortName} (${e.date})`);
-  });
-  return soon.length > 0;
+  console.error("Mismatches after re-reading:");
+  mismatches.forEach((m) => console.error(`  ${m}`));
+  return false;
 }
 
 async function main() {
@@ -245,7 +271,11 @@ async function main() {
     throw new Error("Missing LEAGUE_ID, TEAM_ID, SWID or ESPN_S2 in .env");
   }
 
-  if (AUTO && !(await kickoffInWindow())) {
+  // The scoreboard decides both the trigger window and which players are locked.
+  // If it can't be read, the run stops rather than guess at locks.
+  const events = await fetchScoreboard();
+
+  if (AUTO && !kickoffInWindow(events)) {
     console.log(`No kickoff in the next ${WINDOW_MINUTES} minutes. Nothing to do.`);
     return;
   }
@@ -271,7 +301,7 @@ async function main() {
   }
 
   console.log(`Team: ${team.name}`);
-  console.log(`Scoring period: ${period}`);
+  console.log(`Season: ${SEASON_ID}, scoring period: ${period}`);
   console.log(
     "League starting slots: " +
       Object.entries(team.lineupSlotCounts)
@@ -280,10 +310,29 @@ async function main() {
         .join(", "),
   );
 
-  const assignments = buildLineup(team.players, team.lineupSlotCounts);
-  printLineup(team.players, assignments);
+  // Locked players stay where they are. Their starter slots come off the top, and the rest is optimized around them.
+  const lockedTeams = lockedTeamIds(events);
+  const frozen = team.players.filter((p) => lockedTeams.has(String(p.proTeamId)));
+  const frozenIds = new Set(frozen.map((p) => p.id));
+  if (frozen.length > 0) {
+    console.log("\nLocked (game started or finished), left in place:");
+    frozen.forEach((p) => console.log(`  ${p.name.padEnd(25)} ${slotName(p.currentSlot)} (proTeamId ${p.proTeamId})`));
+  }
 
-  const moves = buildMoves(team.players, assignments);
+  const movable = team.players.filter((p) => !frozenIds.has(p.id) && p.currentSlot !== IR);
+  const openSlots = startingSlots(team.lineupSlotCounts);
+  for (const p of frozen) {
+    const i = openSlots.indexOf(p.currentSlot);
+    if (i >= 0) openSlots.splice(i, 1);
+  }
+
+  const assignments = buildLineup(movable, openSlots);
+  for (const p of frozen) {
+    if (p.currentSlot !== BENCH && p.currentSlot !== IR) assignments.set(p.id, p.currentSlot);
+  }
+  printLineup(team.players.filter((p) => p.currentSlot !== IR), assignments);
+
+  const moves = buildMoves(team.players, assignments, frozenIds);
   const problems = validateMoves(team.players, moves);
   if (problems.length > 0) {
     console.error("\nNothing sent. Problems:");
@@ -307,13 +356,18 @@ async function main() {
   }
 
   await sendMoves(moves, period);
-  await verify(moves, period);
+  const ok = await verify(moves, period);
+  if (!ok) process.exitCode = 1;
 }
 
-main().catch((error) => {
-  console.error("Error:", error.message);
-  if (error.response?.status === 401) console.error("Auth failed. Check ESPN_S2 and SWID in .env");
-  if (error.response?.status === 404) console.error("League not found. Check LEAGUE_ID in .env");
-  if (error.response?.data) console.error("ESPN said:", JSON.stringify(error.response.data));
-  process.exit(1);
-});
+if (require.main === module) {
+  main().catch((error) => {
+    console.error("Error:", error.message);
+    if (error.response?.status === 401) console.error("Auth failed. Check ESPN_S2 and SWID in .env");
+    if (error.response?.status === 404) console.error("League not found. Check LEAGUE_ID in .env");
+    if (error.response?.data) console.error("ESPN said:", JSON.stringify(error.response.data));
+    process.exit(1);
+  });
+}
+
+module.exports = { startingSlots, buildLineup, buildMoves, lockedTeamIds, kickoffInWindow, IR, BENCH };
