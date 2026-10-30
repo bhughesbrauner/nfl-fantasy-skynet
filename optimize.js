@@ -227,7 +227,18 @@ async function main() {
     throw new Error(`Period ${PERIOD_OVERRIDE} is before ESPN's current period ${probe.latestPeriod}; that period is locked.`);
   }
 
-  const team = PERIOD_OVERRIDE !== undefined ? await fetchTeam(period) : probe;
+  // Re-read for the chosen period. The first read had no scoringPeriodId, so its projections are not for this week.
+  const team = await fetchTeam(period);
+
+  // Any starting slot this script does not model (e.g. slot 3) must stop the run.
+  // Moving such a player to the bench is a real change to the lineup, not a fix.
+  const unknown = team.players.filter((p) => !(p.currentSlot in SLOT_NAME));
+  if (unknown.length > 0) {
+    console.error("\nNothing sent. These players are in lineup slots this script does not model:");
+    unknown.forEach((p) => console.error(`  ${p.name}: slot ${p.currentSlot}`));
+    console.error("Send these slot IDs and the league's lineup slot settings before using --write.");
+    process.exit(1);
+  }
   console.log(`Team: ${team.name}`);
   console.log(`Scoring period: ${period}`);
 
