@@ -1,0 +1,41 @@
+name: Set ESPN lineup
+
+on:
+  schedule:
+    # Every 10 minutes, Thursday through Tuesday (cron runs in UTC). The script
+    # exits without doing anything unless a game kicks off within the next 60 minutes.
+    # GitHub can start scheduled runs late, so the window is 60 minutes wide.
+    - cron: "*/10 * * * 4,5,6,0,1,2"
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Print the lineup and moves without sending anything"
+        type: boolean
+        default: false
+
+jobs:
+  lineup:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      LEAGUE_ID: ${{ secrets.LEAGUE_ID }}
+      TEAM_ID: ${{ secrets.TEAM_ID }}
+      SWID: ${{ secrets.SWID }}
+      ESPN_S2: ${{ secrets.ESPN_S2 }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      - name: Set lineup
+        run: |
+          if [ "${{ inputs.dry_run }}" = "true" ]; then
+            node optimize.js
+          else
+            node optimize.js --auto
+          fi

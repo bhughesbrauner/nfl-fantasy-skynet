@@ -5,8 +5,11 @@ const axios = require("axios");
 //   node optimize.js              prints the optimized lineup and the moves, sends nothing
 //   node optimize.js --write      also sends the moves to ESPN, then re-reads the roster to check them
 //   node optimize.js --period=5   optimizes for scoring period 5 instead of ESPN's current period
+//   node optimize.js --auto       for the scheduled workflow: exits unless a game kicks off within the
+//                                 next 60 minutes, then writes (same as --write)
 
-const WRITE = process.argv.includes("--write");
+const AUTO = process.argv.includes("--auto");
+const WRITE = AUTO || process.argv.includes("--write");
 const periodArg = process.argv.find((a) => a.startsWith("--period="));
 const PERIOD_OVERRIDE = periodArg ? Number(periodArg.split("=")[1]) : undefined;
 
@@ -214,9 +217,35 @@ async function verify(moves, period) {
   }
 }
 
+// Public ESPN scoreboard for the current NFL week. No auth.
+const SCOREBOARD_URL = "https://site.api.espn.com/apis/site/v2/sports/football/nfl/scoreboard";
+const WINDOW_MINUTES = 60;
+
+// True when a game has not kicked off yet and starts within WINDOW_MINUTES.
+// Lineup changes only happen in that window, so each week's moves go in before the games lock.
+async function kickoffInWindow() {
+  const { data } = await axios.get(SCOREBOARD_URL);
+  const now = Date.now();
+  const soon = (data.events || []).filter((e) => {
+    if (e.status?.type?.state !== "pre") return false;
+    const minutes = (Date.parse(e.date) - now) / 60000;
+    return minutes > 0 && minutes <= WINDOW_MINUTES;
+  });
+  soon.forEach((e) => {
+    const minutes = Math.round((Date.parse(e.date) - now) / 60000);
+    console.log(`Kickoff in ${minutes} min: ${e.shortName} (${e.date})`);
+  });
+  return soon.length > 0;
+}
+
 async function main() {
   if (!LEAGUE_ID || !TEAM_ID || !SWID || !ESPN_S2) {
     throw new Error("Missing LEAGUE_ID, TEAM_ID, SWID or ESPN_S2 in .env");
+  }
+
+  if (AUTO && !(await kickoffInWindow())) {
+    console.log(`No kickoff in the next ${WINDOW_MINUTES} minutes. Nothing to do.`);
+    return;
   }
 
   // First read gives ESPN's current period, unless --period was passed.
