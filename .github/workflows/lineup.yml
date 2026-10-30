@@ -19,7 +19,7 @@ jobs:
     timeout-minutes: 10
     env:
       LEAGUE_ID: ${{ secrets.LEAGUE_ID }}
-      TEAM_ID: ${{ secrets.TEAM_ID }}
+      TEAM_ID: ${{ vars.TEAM_ID }}
       SWID: ${{ secrets.SWID }}
       ESPN_S2: ${{ secrets.ESPN_S2 }}
     steps:
