@@ -16,7 +16,8 @@ const SWID = process.env.SWID;
 const TEAM_ID = process.env.TEAM_ID;
 const SEASON_ID = new Date().getFullYear();
 
-const READS_URL = `https://lm-api-reads.fantasy.espn.com/apis/v3/games/ffl/seasons/${SEASON_ID}/segments/0/leagues/${LEAGUE_ID}`;
+// Views go in the URL string. Axios would send an array in `params` as view[]=..., which ESPN ignores.
+const READS_URL = `https://lm-api-reads.fantasy.espn.com/apis/v3/games/ffl/seasons/${SEASON_ID}/segments/0/leagues/${LEAGUE_ID}?view=mRoster&view=mTeam&view=mStatus`;
 // Unverified: the host comes from espn-fantasy-mcp's writes.ts. The HTTP method and
 // path are assumed to be POST to .../transactions/. Confirm against client.ts before using --write.
 const WRITES_URL = `https://lm-api-writes.fantasy.espn.com/apis/v3/games/ffl/seasons/${SEASON_ID}/segments/0/leagues/${LEAGUE_ID}/transactions/`;
@@ -73,7 +74,7 @@ function headers(extra = {}) {
 async function fetchTeam(period) {
   const { data } = await axios.get(READS_URL, {
     headers: headers(),
-    params: { view: ["mRoster", "mTeam", "mStatus"], scoringPeriodId: period },
+    params: { scoringPeriodId: period },
   });
 
   if (!Array.isArray(data.teams) || data.teams.length === 0) {
