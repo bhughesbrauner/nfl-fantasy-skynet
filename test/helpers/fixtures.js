@@ -32,6 +32,8 @@ function standardEntries() {
     entry({ id: 7, name: "Dicker", proTeamId: 24, eligible: [17], slot: 17, proj: 10 }),
     entry({ id: 8, name: "Ravens", proTeamId: 33, eligible: [16], slot: 16, proj: 7.7 }),
     entry({ id: 9, name: "IR Star", proTeamId: 3, eligible: [2, 23], slot: 21, proj: 30 }),
+    entry({ id: 10, name: "WR Bench", proTeamId: 2, eligible: [4, 3, 23], slot: 20, proj: 6 }),
+    entry({ id: 11, name: "RB Bench", proTeamId: 5, eligible: [2, 23], slot: 20, proj: 4 }),
   ];
 }
 
