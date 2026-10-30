@@ -17,45 +17,24 @@ const TEAM_ID = process.env.TEAM_ID;
 const SEASON_ID = new Date().getFullYear();
 
 // Views go in the URL string. Axios would send an array in `params` as view[]=..., which ESPN ignores.
-const READS_URL = `https://lm-api-reads.fantasy.espn.com/apis/v3/games/ffl/seasons/${SEASON_ID}/segments/0/leagues/${LEAGUE_ID}?view=mRoster&view=mTeam&view=mStatus`;
+// mSettings gives the league's lineup slot counts, so the starter list comes from the league itself.
+const READS_URL = `https://lm-api-reads.fantasy.espn.com/apis/v3/games/ffl/seasons/${SEASON_ID}/segments/0/leagues/${LEAGUE_ID}?view=mRoster&view=mTeam&view=mStatus&view=mSettings`;
 // Unverified: the host comes from espn-fantasy-mcp's writes.ts. The HTTP method and
 // path are assumed to be POST to .../transactions/. Confirm against client.ts before using --write.
 const WRITES_URL = `https://lm-api-writes.fantasy.espn.com/apis/v3/games/ffl/seasons/${SEASON_ID}/segments/0/leagues/${LEAGUE_ID}/transactions/`;
 
 const COOKIE = `SWID=${SWID}; espn_s2=${ESPN_S2}`;
 
-// ESPN lineup slot IDs (football)
-const SLOT = { QB: 0, RB: 2, WR: 4, TE: 6, DEF: 16, K: 17, BENCH: 20, IR: 21, FLEX: 23 };
-const SLOT_NAME = Object.fromEntries(Object.entries(SLOT).map(([name, id]) => [id, name]));
-
-// Starting slots in fill order. Each entry lists the slot ID and the eligible positions.
-// Positions come from the player's eligibleSlots, so FLEX (23) is filled from RB/WR/TE.
-const STARTING_SLOTS = [
-  { slot: SLOT.QB, label: "QB", positions: ["QB"] },
-  { slot: SLOT.RB, label: "RB", positions: ["RB"] },
-  { slot: SLOT.RB, label: "RB", positions: ["RB"] },
-  { slot: SLOT.WR, label: "WR", positions: ["WR"] },
-  { slot: SLOT.WR, label: "WR", positions: ["WR"] },
-  { slot: SLOT.TE, label: "TE", positions: ["TE"] },
-  { slot: SLOT.FLEX, label: "FLEX", positions: ["RB", "WR", "TE"] },
-  { slot: SLOT.K, label: "K", positions: ["K"] },
-  { slot: SLOT.DEF, label: "DEF", positions: ["D/ST"] },
-];
-
-// Position from the player's eligibleSlots (the starting slots they can fill).
-const POSITION_BY_SLOT = {
-  [SLOT.QB]: "QB",
-  [SLOT.RB]: "RB",
-  [SLOT.WR]: "WR",
-  [SLOT.TE]: "TE",
-  [SLOT.DEF]: "D/ST",
-  [SLOT.K]: "K",
+// ESPN football lineup slot IDs (from ffscrapr's espn_lineupslot_map).
+const BENCH = 20;
+const IR = 21;
+const SLOT_NAME = {
+  0: "QB", 1: "TQB", 2: "RB", 3: "RB/WR", 4: "WR", 5: "WR/TE", 6: "TE", 7: "OP",
+  8: "DT", 9: "DE", 10: "LB", 11: "DL", 12: "CB", 13: "S", 14: "DB", 15: "DP",
+  16: "D/ST", 17: "K", 18: "P", 19: "HC", 20: "BE", 21: "IR", 22: "XYZ",
+  23: "RB/WR/TE", 24: "ER", 25: "Rookie",
 };
-
-function getPosition(player) {
-  const slot = (player.eligibleSlots || []).find((id) => id in POSITION_BY_SLOT);
-  return slot === undefined ? "Bench" : POSITION_BY_SLOT[slot];
-}
+const slotName = (id) => SLOT_NAME[id] ?? `slot ${id}`;
 
 // Projected points for one scoring period (statSourceId 1 = projection).
 // Season totals (scoringPeriodId 0) are never used.
@@ -91,7 +70,6 @@ async function fetchTeam(period) {
       return {
         id: player.id,
         name: player.fullName,
-        position: getPosition(player),
         eligibleSlots: player.eligibleSlots || [],
         currentSlot: entry.lineupSlotId,
         projectedPoints: getProjectedPoints(player, period),
@@ -99,22 +77,41 @@ async function fetchTeam(period) {
     })
     .filter(Boolean);
 
-  return { name: team.name, players, latestPeriod: data.status?.latestScoringPeriod };
+  return {
+    name: team.name,
+    players,
+    lineupSlotCounts: data.settings?.rosterSettings?.lineupSlotCounts ?? {},
+    latestPeriod: data.status?.latestScoringPeriod,
+  };
 }
 
-// Greedy: fill each starting slot with the highest-projected unused eligible player.
-// Bench and IR players are not eligible for starting slots here, so they go to the bench.
-function buildLineup(players) {
+// One entry per starting slot the league uses, e.g. [0, 2, 2, 3, 4, 23, 16, 17].
+function startingSlots(lineupSlotCounts) {
+  const slots = [];
+  for (const [id, count] of Object.entries(lineupSlotCounts)) {
+    const slot = Number(id);
+    if (slot === BENCH || slot === IR || count <= 0) continue;
+    for (let i = 0; i < count; i++) slots.push(slot);
+  }
+  return slots;
+}
+
+// Greedy: fill the most restricted slots first, each with the highest-projected unused eligible player.
+// Restricted first means a flex-eligible player is not used up before a QB or K slot needs him.
+function buildLineup(players, lineupSlotCounts) {
+  const slots = startingSlots(lineupSlotCounts);
+  const candidatesFor = (slot) => players.filter((p) => p.eligibleSlots.includes(slot));
+  slots.sort((a, b) => candidatesFor(a).length - candidatesFor(b).length);
+
   const used = new Set();
   const assignments = new Map(); // playerId -> slot ID
-
-  for (const { slot, label, positions } of STARTING_SLOTS) {
-    const candidate = players
-      .filter((p) => !used.has(p.id) && positions.includes(p.position))
+  for (const slot of slots) {
+    const best = candidatesFor(slot)
+      .filter((p) => !used.has(p.id))
       .sort((a, b) => b.projectedPoints - a.projectedPoints)[0];
-    if (candidate) {
-      assignments.set(candidate.id, slot);
-      used.add(candidate.id);
+    if (best) {
+      assignments.set(best.id, slot);
+      used.add(best.id);
     }
   }
   return assignments;
@@ -125,8 +122,8 @@ function buildLineup(players) {
 function buildMoves(players, assignments) {
   const moves = [];
   for (const p of players) {
-    if (p.currentSlot === SLOT.IR) continue;
-    const target = assignments.get(p.id) ?? SLOT.BENCH;
+    if (p.currentSlot === IR) continue;
+    const target = assignments.get(p.id) ?? BENCH;
     if (p.currentSlot !== target) {
       moves.push({ playerId: p.id, name: p.name, fromSlot: p.currentSlot, toSlot: target });
     }
@@ -134,17 +131,25 @@ function buildMoves(players, assignments) {
   return moves;
 }
 
-// Check that every starting slot a player is moved into is one they are eligible for.
+// Every starter a player is moved into must be one they are eligible for.
 function validateMoves(players, moves) {
   const byId = new Map(players.map((p) => [p.id, p]));
   const problems = [];
   for (const m of moves) {
     const p = byId.get(m.playerId);
-    if (m.toSlot !== SLOT.BENCH && !p.eligibleSlots.includes(m.toSlot)) {
-      problems.push(`${p.name} is not eligible for ${SLOT_NAME[m.toSlot]}`);
+    if (m.toSlot !== BENCH && !p.eligibleSlots.includes(m.toSlot)) {
+      problems.push(`${p.name} is not eligible for ${slotName(m.toSlot)}`);
     }
   }
   return problems;
+}
+
+// Players in a slot the league does not use (other than bench and IR) stop the run.
+// Moving them would be a real lineup change the script does not understand.
+function unknownSlotPlayers(players, lineupSlotCounts) {
+  return players.filter(
+    (p) => p.currentSlot !== BENCH && p.currentSlot !== IR && !(lineupSlotCounts[p.currentSlot] > 0),
+  );
 }
 
 // Same body shape as espn-fantasy-mcp's buildLineupBody: one LINEUP item per moved player,
@@ -171,12 +176,10 @@ function printLineup(players, assignments) {
   let total = 0;
   const rows = players
     .filter((p) => assignments.has(p.id))
-    .sort((a, b) => STARTING_SLOTS.findIndex((s) => s.slot === assignments.get(a.id)) - STARTING_SLOTS.findIndex((s) => s.slot === assignments.get(b.id)));
+    .sort((a, b) => assignments.get(a.id) - assignments.get(b.id));
   for (const p of rows) {
     total += p.projectedPoints;
-    console.log(
-      `${(SLOT_NAME[assignments.get(p.id)] || "").padEnd(6)} ${p.name.padEnd(25)} ${p.position.padEnd(5)} ${p.projectedPoints.toFixed(1)} pts`,
-    );
+    console.log(`${slotName(assignments.get(p.id)).padEnd(10)} ${p.name.padEnd(25)} ${p.projectedPoints.toFixed(1)} pts`);
   }
   console.log(`\nTotal projected: ${total.toFixed(1)} pts`);
 }
@@ -188,7 +191,6 @@ async function sendMoves(moves, period) {
     headers: headers({ "Content-Type": "application/json" }),
   });
   console.log(`ESPN responded with status ${response.status}.`);
-  return body;
 }
 
 async function verify(moves, period) {
@@ -201,7 +203,7 @@ async function verify(moves, period) {
     const bySlot = new Map(team.players.map((p) => [p.id, p.currentSlot]));
     mismatches = moves
       .filter((m) => bySlot.get(m.playerId) !== m.toSlot)
-      .map((m) => `${m.name}: expected ${SLOT_NAME[m.toSlot]}, roster shows ${SLOT_NAME[bySlot.get(m.playerId)] ?? bySlot.get(m.playerId)}`);
+      .map((m) => `${m.name}: expected ${slotName(m.toSlot)}, roster shows ${slotName(bySlot.get(m.playerId))}`);
     if (mismatches.length === 0) break;
   }
   if (mismatches.length === 0) {
@@ -230,19 +232,24 @@ async function main() {
   // Re-read for the chosen period. The first read had no scoringPeriodId, so its projections are not for this week.
   const team = await fetchTeam(period);
 
-  // Any starting slot this script does not model (e.g. slot 3) must stop the run.
-  // Moving such a player to the bench is a real change to the lineup, not a fix.
-  const unknown = team.players.filter((p) => !(p.currentSlot in SLOT_NAME));
+  const unknown = unknownSlotPlayers(team.players, team.lineupSlotCounts);
   if (unknown.length > 0) {
-    console.error("\nNothing sent. These players are in lineup slots this script does not model:");
-    unknown.forEach((p) => console.error(`  ${p.name}: slot ${p.currentSlot}`));
-    console.error("Send these slot IDs and the league's lineup slot settings before using --write.");
+    console.error("\nNothing sent. These players are in lineup slots the league does not use:");
+    unknown.forEach((p) => console.error(`  ${p.name}: ${slotName(p.currentSlot)}`));
     process.exit(1);
   }
+
   console.log(`Team: ${team.name}`);
   console.log(`Scoring period: ${period}`);
+  console.log(
+    "League starting slots: " +
+      Object.entries(team.lineupSlotCounts)
+        .filter(([id, c]) => Number(id) !== BENCH && Number(id) !== IR && c > 0)
+        .map(([id, c]) => `${slotName(Number(id))} x${c}`)
+        .join(", "),
+  );
 
-  const assignments = buildLineup(team.players);
+  const assignments = buildLineup(team.players, team.lineupSlotCounts);
   printLineup(team.players, assignments);
 
   const moves = buildMoves(team.players, assignments);
@@ -254,9 +261,7 @@ async function main() {
   }
 
   console.log(`\nMoves needed: ${moves.length}`);
-  moves.forEach((m) =>
-    console.log(`  ${m.name.padEnd(25)} ${SLOT_NAME[m.fromSlot] ?? m.fromSlot} -> ${SLOT_NAME[m.toSlot]}`),
-  );
+  moves.forEach((m) => console.log(`  ${m.name.padEnd(25)} ${slotName(m.fromSlot)} -> ${slotName(m.toSlot)}`));
 
   if (moves.length === 0) {
     console.log("\nLineup already matches the optimum. Nothing to send.");
@@ -278,5 +283,6 @@ main().catch((error) => {
   console.error("Error:", error.message);
   if (error.response?.status === 401) console.error("Auth failed. Check ESPN_S2 and SWID in .env");
   if (error.response?.status === 404) console.error("League not found. Check LEAGUE_ID in .env");
+  if (error.response?.data) console.error("ESPN said:", JSON.stringify(error.response.data));
   process.exit(1);
 });
