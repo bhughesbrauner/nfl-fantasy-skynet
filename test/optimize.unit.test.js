@@ -264,31 +264,57 @@ describe("lockedTeamIds", () => {
 });
 
 describe("kickoffInWindow", () => {
-  const minutesFromNow = (m) => new Date(Date.now() + m * 60000).toISOString();
-  const ev = (state, minutes) => ({ status: { type: { state } }, date: minutesFromNow(minutes), shortName: "X @ Y" });
+  // A fixed clock, so the boundaries are exact rather than off by a few milliseconds.
+  const NOW = Date.parse("2026-11-01T12:00:00Z");
+  const W = optimize.WINDOW_MINUTES;
+  const at = (ms) => new Date(NOW + ms).toISOString();
+  const minutes = (m) => m * 60000;
+  const ev = (state, ms) => ({ status: { type: { state } }, date: at(ms), shortName: "X @ Y" });
+  const inWindow = (events) => optimize.kickoffInWindow(events, NOW);
+
+  test("the window length is 75 minutes", () => {
+    assert.equal(W, 75);
+  });
 
   test("true for a scheduled game inside the window", () => {
-    assert.equal(optimize.kickoffInWindow([ev("pre", 30)]), true);
+    assert.equal(inWindow([ev("pre", minutes(30))]), true);
   });
 
-  test("the window edge (WINDOW_MINUTES) is included", () => {
-    assert.equal(optimize.kickoffInWindow([ev("pre", optimize.WINDOW_MINUTES - 1)]), true);
+  test("a game exactly WINDOW_MINUTES away is included", () => {
+    assert.equal(inWindow([ev("pre", minutes(W))]), true);
   });
 
-  test("a game beyond the window is excluded", () => {
-    assert.equal(optimize.kickoffInWindow([ev("pre", optimize.WINDOW_MINUTES + 5)]), false);
+  test("a game one millisecond past the window edge is excluded", () => {
+    assert.equal(inWindow([ev("pre", minutes(W) + 1)]), false);
+  });
+
+  test("a game one minute inside the window edge is included", () => {
+    assert.equal(inWindow([ev("pre", minutes(W - 1))]), true);
+  });
+
+  test("a game at exactly kickoff (0 minutes away) is excluded", () => {
+    assert.equal(inWindow([ev("pre", 0)]), false);
   });
 
   test("a game that already kicked off is excluded", () => {
-    assert.equal(optimize.kickoffInWindow([ev("pre", -5)]), false);
+    assert.equal(inWindow([ev("pre", minutes(-5))]), false);
   });
 
   test("an in-progress or final game does not count", () => {
-    assert.equal(optimize.kickoffInWindow([ev("in", 10), ev("post", 10)]), false);
+    assert.equal(inWindow([ev("in", minutes(10)), ev("post", minutes(10))]), false);
+  });
+
+  test("one qualifying game is enough, even with others outside", () => {
+    assert.equal(inWindow([ev("pre", minutes(W + 60)), ev("pre", minutes(20))]), true);
   });
 
   test("no events means no window", () => {
-    assert.equal(optimize.kickoffInWindow([]), false);
+    assert.equal(inWindow([]), false);
+  });
+
+  test("uses the real clock when no time is passed", () => {
+    const soon = [{ status: { type: { state: "pre" } }, date: new Date(Date.now() + minutes(20)).toISOString() }];
+    assert.equal(optimize.kickoffInWindow(soon), true);
   });
 });
 

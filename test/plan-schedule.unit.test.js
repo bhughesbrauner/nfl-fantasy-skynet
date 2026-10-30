@@ -150,6 +150,14 @@ describe("the real lineup workflow", () => {
     assert.match(out, /^    - cron: "0 0 1 1 \*"$/m);
   });
 
+  test("the planner checks WORKFLOW_TOKEN before checkout uses it", () => {
+    const planner = fs.readFileSync(path.join(__dirname, "..", ".github", "workflows", "plan-schedule.yml"), "utf8");
+    const check = planner.indexOf("Check WORKFLOW_TOKEN is set");
+    const checkout = planner.indexOf("uses: actions/checkout");
+    assert.ok(check > -1 && checkout > -1, "both steps must exist");
+    assert.ok(check < checkout, "the token check must run before checkout");
+  });
+
   test("runs --auto on schedule and --write on a manual run", () => {
     assert.match(text, /node optimize\.js --auto/);
     assert.match(text, /node optimize\.js --write/);

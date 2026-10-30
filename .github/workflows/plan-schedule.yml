@@ -17,6 +17,17 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
+      # Runs before checkout, which needs the token. Without this check, a missing
+      # secret fails inside checkout with a generic auth error.
+      - name: Check WORKFLOW_TOKEN is set
+        env:
+          WORKFLOW_TOKEN: ${{ secrets.WORKFLOW_TOKEN }}
+        run: |
+          if [ -z "$WORKFLOW_TOKEN" ]; then
+            echo "::error::Add a WORKFLOW_TOKEN secret (fine-grained PAT with Contents and Workflows write access)."
+            exit 1
+          fi
+
       - uses: actions/checkout@v4
         with:
           token: ${{ secrets.WORKFLOW_TOKEN }}
@@ -29,14 +40,7 @@ jobs:
       - run: npm ci
 
       - name: Rewrite lineup schedule
-        env:
-          WORKFLOW_TOKEN: ${{ secrets.WORKFLOW_TOKEN }}
-        run: |
-          if [ -z "$WORKFLOW_TOKEN" ]; then
-            echo "::error::Add a WORKFLOW_TOKEN secret (fine-grained PAT with Contents and Workflows write access)."
-            exit 1
-          fi
-          node plan-schedule.js
+        run: node plan-schedule.js
 
       - name: Commit if the schedule changed
         run: |

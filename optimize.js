@@ -110,8 +110,7 @@ async function fetchScoreboard() {
 }
 
 // True when a game has not kicked off yet and starts within WINDOW_MINUTES.
-function kickoffInWindow(events) {
-  const now = Date.now();
+function kickoffInWindow(events, now = Date.now()) {
   const soon = events.filter((e) => {
     if (e.status?.type?.state !== "pre") return false;
     const minutes = (Date.parse(e.date) - now) / 60000;
