@@ -23,8 +23,10 @@ const TEAM_ID = process.env.TEAM_ID;
 
 // ESPN names a season by the year it starts in. The season starts in August (preseason), so
 // January through July still belong to the prior year's season.
-const now0 = new Date();
-const SEASON_ID = now0.getMonth() >= 7 ? now0.getFullYear() : now0.getFullYear() - 1;
+function seasonFor(date) {
+  return date.getMonth() >= 7 ? date.getFullYear() : date.getFullYear() - 1;
+}
+const SEASON_ID = seasonFor(new Date());
 
 // Views go in the URL string. Axios would send an array in `params` as view[]=..., which ESPN ignores.
 // mSettings gives the league's lineup slot counts, so the starter list comes from the league itself.
@@ -244,9 +246,12 @@ async function sendMoves(moves, period) {
 }
 
 // Returns true when every move is on the roster read-back.
+// VERIFY_DELAYS_MS overrides the wait times (used by the tests).
+const VERIFY_DELAYS = process.env.VERIFY_DELAYS_MS ? JSON.parse(process.env.VERIFY_DELAYS_MS) : [3000, 8000, 15000];
+
 async function verify(moves, period) {
   // ESPN's reads can lag writes, so re-read a few times before reporting a mismatch.
-  const delays = [3000, 8000, 15000];
+  const delays = VERIFY_DELAYS;
   let mismatches = [];
   for (let attempt = 0; attempt <= delays.length; attempt++) {
     if (attempt > 0) await new Promise((r) => setTimeout(r, delays[attempt - 1]));
@@ -370,4 +375,22 @@ if (require.main === module) {
   });
 }
 
-module.exports = { startingSlots, buildLineup, buildMoves, lockedTeamIds, kickoffInWindow, IR, BENCH };
+module.exports = {
+  BENCH,
+  IR,
+  WINDOW_MINUTES,
+  seasonFor,
+  getProjectedPoints,
+  fetchTeam,
+  fetchScoreboard,
+  startingSlots,
+  buildLineup,
+  buildMoves,
+  validateMoves,
+  unknownSlotPlayers,
+  buildLineupBody,
+  lockedTeamIds,
+  kickoffInWindow,
+  verify,
+  main,
+};
