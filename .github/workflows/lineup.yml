@@ -1,0 +1,47 @@
+name: Set ESPN lineup
+
+on:
+  schedule:
+    # Entries between the markers are written by plan-schedule.js (see plan-schedule.yml).
+    # Edit by hand only if you also stop the planner. The placeholder fires once a year and does nothing.
+    # BEGIN generated schedule
+    - cron: "0 0 1 1 *"
+    # END generated schedule
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Print the lineup and moves without sending anything"
+        type: boolean
+        default: false
+
+jobs:
+  lineup:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      LEAGUE_ID: ${{ secrets.LEAGUE_ID }}
+      TEAM_ID: ${{ vars.TEAM_ID }}
+      SWID: ${{ secrets.SWID }}
+      ESPN_S2: ${{ secrets.ESPN_S2 }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      - name: Set lineup
+        env:
+          EVENT: ${{ github.event_name }}
+          DRY_RUN: ${{ inputs.dry_run }}
+        run: |
+          if [ "$EVENT" = "schedule" ]; then
+            node optimize.js --auto          # only acts inside a kickoff window
+          elif [ "$DRY_RUN" = "true" ]; then
+            node optimize.js                 # manual: print the plan, send nothing
+          else
+            node optimize.js --write         # manual: set the lineup now
+          fi
