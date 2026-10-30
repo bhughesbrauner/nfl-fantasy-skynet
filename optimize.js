@@ -28,53 +28,26 @@ const LINEUP_SLOTS = {
   DEF: { count: 1, positions: ["D/ST"] },
 };
 
-// Map ESPN position IDs to position strings
+// Map ESPN defaultPositionId values to position strings
 const positionIdMap = {
-  0: "QB",
+  1: "QB",
   2: "RB",
-  4: "WR",
-  6: "TE",
+  3: "WR",
+  4: "TE",
+  5: "K",
   16: "D/ST",
-  17: "K",
-  20: "Bench",
-  21: "IR",
-  23: "FLEX",
 };
 
-// Extract projected points from player stats (statSourceId: 1 = projection)
-// Looks for week-specific projection, falls back to season projection
+// Projected points for one scoring period (statSourceId: 1 = projection).
+// Returns 0 when the week has no projection. Season totals are not used here.
 function getProjectedPoints(player, scoringPeriod) {
   if (!player.stats || !Array.isArray(player.stats)) return 0;
 
-  // First try to find week-specific projection
-  let projection = player.stats.find(
+  const projection = player.stats.find(
     (s) => s.scoringPeriodId === scoringPeriod && s.statSourceId === 1,
   );
 
-  // Fall back to season projection if week not found
-  if (!projection) {
-    projection = player.stats.find(
-      (s) => s.scoringPeriodId === 0 && s.statSourceId === 1,
-    );
-  }
-
   return projection?.appliedTotal || 0;
-}
-
-// Map ESPN slot codes to position names
-function mapPosition(player) {
-  const slotCodeMap = {
-    0: "QB",
-    2: "RB",
-    4: "WR",
-    6: "TE",
-    16: "D/ST",
-    17: "K",
-    20: "Bench",
-    21: "IR",
-    23: "FLEX",
-  };
-  return slotCodeMap[player.lineupSlotId] || "Bench";
 }
 
 async function optimize() {
@@ -99,26 +72,15 @@ async function optimize() {
     }
 
     const myTeam = data.teams.find((t) => t.id.toString() === TEAM_ID);
+    if (!myTeam) {
+      throw new Error(`Team ${TEAM_ID} not found. Check TEAM_ID in .env`);
+    }
     console.log(`Found team: ${myTeam.name}`);
 
     // Extract roster entries (each is a player slot with assigned player)
     if (!myTeam.roster || !myTeam.roster.entries) {
       throw new Error("No roster entries found on team.");
     }
-
-    // Map ESPN position IDs to position strings
-    const positionIdMap = {
-      1: "QB",
-      2: "RB",
-      3: "WR",
-      4: "TE",
-      5: "K",
-      16: "D/ST",
-
-      20: "Bench",
-      21: "IR",
-      23: "FLEX",
-    };
 
     // Build players list from roster entries
     const allPlayers = myTeam.roster.entries
