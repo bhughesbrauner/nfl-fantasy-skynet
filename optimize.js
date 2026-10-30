@@ -28,15 +28,22 @@ const LINEUP_SLOTS = {
   DEF: { count: 1, positions: ["D/ST"] },
 };
 
-// Map ESPN defaultPositionId values to position strings
+// Map ESPN lineup slot IDs to position strings
 const positionIdMap = {
-  1: "QB",
+  0: "QB",
   2: "RB",
-  3: "WR",
-  4: "TE",
-  5: "K",
+  4: "WR",
+  6: "TE",
   16: "D/ST",
+  17: "K",
 };
+
+// A player's position is the first of their eligible slots that is in positionIdMap.
+// FLEX (23), Bench (20) and IR (21) are not in the map, so they are skipped.
+function getPosition(player) {
+  const slot = (player.eligibleSlots || []).find((id) => id in positionIdMap);
+  return slot === undefined ? "Bench" : positionIdMap[slot];
+}
 
 // Projected points for one scoring period (statSourceId: 1 = projection).
 // Returns 0 when the week has no projection. Season totals are not used here.
@@ -91,13 +98,10 @@ async function optimize() {
 
         const projected = getProjectedPoints(player, SCORING_PERIOD);
 
-        // Use position ID map instead of defaultPosition
-        const pos = positionIdMap[player.defaultPositionId] || "Bench";
-
         return {
           id: player.id,
           name: player.fullName,
-          position: pos,
+          position: getPosition(player),
           nflTeam: player.proTeamId || 0,
           projectedPoints: projected,
         };
