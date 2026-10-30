@@ -1,0 +1,39 @@
+name: Plan lineup schedule
+
+on:
+  schedule:
+    # 11:00 UTC is 4:00 a.m. in Phoenix, which is UTC-7 all year.
+    - cron: "0 11 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      - name: Rewrite lineup schedule
+        run: node plan-schedule.js
+
+      - name: Commit if the schedule changed
+        run: |
+          if git diff --quiet -- .github/workflows/lineup.yml; then
+            echo "Schedule unchanged, nothing to commit."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add .github/workflows/lineup.yml
+          git commit -m "Update lineup schedule"
+          git push

@@ -219,7 +219,9 @@ async function verify(moves, period) {
 
 // Public ESPN scoreboard for the current NFL week. No auth.
 const SCOREBOARD_URL = "https://site.api.espn.com/apis/site/v2/sports/football/nfl/scoreboard";
-const WINDOW_MINUTES = 60;
+// The planner schedules runs 60 minutes before kickoff (rounded down to 5 minutes), so the window
+// is wider than 60 to cover that rounding and any delay in GitHub starting the run.
+const WINDOW_MINUTES = 75;
 
 // True when a game has not kicked off yet and starts within WINDOW_MINUTES.
 // Lineup changes only happen in that window, so each week's moves go in before the games lock.

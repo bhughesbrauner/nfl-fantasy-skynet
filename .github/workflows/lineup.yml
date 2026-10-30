@@ -2,10 +2,11 @@ name: Set ESPN lineup
 
 on:
   schedule:
-    # Every 10 minutes, Thursday through Tuesday (cron runs in UTC). The script
-    # exits without doing anything unless a game kicks off within the next 60 minutes.
-    # GitHub can start scheduled runs late, so the window is 60 minutes wide.
-    - cron: "*/10 * * * 4,5,6,0,1,2"
+    # Entries between the markers are written by plan-schedule.js (see plan-schedule.yml).
+    # Edit by hand only if you also stop the planner. The placeholder fires once a year and does nothing.
+    # BEGIN generated schedule
+    - cron: "0 0 1 1 *"
+    # END generated schedule
   workflow_dispatch:
     inputs:
       dry_run:
