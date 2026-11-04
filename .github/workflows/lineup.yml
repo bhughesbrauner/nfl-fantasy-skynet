@@ -5,7 +5,13 @@ on:
     # Entries between the markers are written by plan-schedule.js (see plan-schedule.yml).
     # Edit by hand only if you also stop the planner. The placeholder fires once a year and does nothing.
     # BEGIN generated schedule
-    - cron: "0 0 1 1 *"
+    - cron: "0 17 8 11 *"
+    - cron: "15 0 10 11 *"
+    - cron: "15 0 6 11 *"
+    - cron: "20 0 9 11 *"
+    - cron: "25 20 8 11 *"
+    - cron: "30 13 8 11 *"
+    - cron: "5 20 8 11 *"
     # END generated schedule
   workflow_dispatch:
     inputs:
