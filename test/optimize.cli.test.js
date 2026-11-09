@@ -63,9 +63,9 @@ function rosterWith(changes = {}) {
   return fx.rosterResponse({ entries });
 }
 
-// A week with a kickoff inside the window, and one far away.
-const inWindow = () => [fx.event({ minutes: 30, teams: [50, 51], shortName: "X @ Y" })];
-const farAway = () => [fx.event({ minutes: 60 * 24 * 3, teams: [50, 51], shortName: "X @ Y" })];
+// A game kicking off in 30 minutes, and one three days away.
+const soonGame = () => [fx.event({ minutes: 30, teams: [50, 51], shortName: "X @ Y" })];
+const laterGame = () => [fx.event({ minutes: 60 * 24 * 3, teams: [50, 51], shortName: "X @ Y" })];
 
 // The optimum for the standard roster: Love (bench) to the RB slot, WR Bench to FLEX.
 const BEFORE = rosterWith({});
@@ -106,7 +106,7 @@ const KONA = [...FREE_AGENTS, ...OWNERSHIP];
 
 describe("dry run (no flags)", () => {
   test("prints the plan and the request, sends nothing", () => {
-    const r = run([], { events: farAway(), rosters: [BEFORE] });
+    const r = run([], { events: laterGame(), rosters: [BEFORE] });
     assert.equal(r.status, 0, r.out);
     assert.match(r.out, /Dry run\. Nothing sent/);
     assert.match(r.out, new RegExp(`Moves needed: ${MOVES}`));
@@ -115,7 +115,7 @@ describe("dry run (no flags)", () => {
   });
 
   test("the printed request body moves Love into RB and WR Bench into FLEX", () => {
-    const r = run([], { events: farAway(), rosters: [BEFORE] });
+    const r = run([], { events: laterGame(), rosters: [BEFORE] });
     const after = r.out.slice(r.out.indexOf("Request body that would be sent:"));
     const body = JSON.parse(after.slice(after.indexOf("{"), after.lastIndexOf("}") + 1));
     assert.deepEqual(body.items, [
@@ -125,13 +125,13 @@ describe("dry run (no flags)", () => {
   });
 
   test("prints the optimized lineup with the projected total", () => {
-    const r = run([], { events: farAway(), rosters: [BEFORE] });
+    const r = run([], { events: laterGame(), rosters: [BEFORE] });
     assert.match(r.out, /=== OPTIMIZED LINEUP ===/);
     assert.match(r.out, /Total projected:/);
   });
 
   test("says so when the lineup is already optimal", () => {
-    const r = run([], { events: farAway(), rosters: [AFTER] });
+    const r = run([], { events: laterGame(), rosters: [AFTER] });
     assert.equal(r.status, 0, r.out);
     assert.match(r.out, /already matches the optimum/);
     assert.equal(r.posts.length, 0);
@@ -140,7 +140,7 @@ describe("dry run (no flags)", () => {
   test("lists locked players and keeps them in place", () => {
     // Team 1 (Bijan, London, Pitts) has a game in progress.
     const live = [fx.event({ state: "in", minutes: -30, teams: [1, 60], shortName: "A @ B" })];
-    const r = run([], { events: [...live, ...farAway()], rosters: [BEFORE] });
+    const r = run([], { events: [...live, ...laterGame()], rosters: [BEFORE] });
     assert.equal(r.status, 0, r.out);
     assert.match(r.out, /Locked \(game started or finished\)/);
     assert.match(r.out, /Bijan/);
@@ -150,13 +150,13 @@ describe("dry run (no flags)", () => {
   });
 
   test("never plans or moves the IR player", () => {
-    const r = run([], { events: farAway(), rosters: [BEFORE] });
+    const r = run([], { events: laterGame(), rosters: [BEFORE] });
     assert.doesNotMatch(r.out, /IR Star/);
   });
 
   test("refuses to plan when a player sits in a slot the league does not use", () => {
     const odd = rosterWith({ 4: 3 }); // slot 3 is not in the league's counts
-    const r = run([], { events: farAway(), rosters: [odd] });
+    const r = run([], { events: laterGame(), rosters: [odd] });
     assert.equal(r.status, 1);
     assert.match(r.out, /slots the league does not use/);
     assert.match(r.out, /London/);
@@ -164,28 +164,21 @@ describe("dry run (no flags)", () => {
   });
 
   test("a period older than ESPN's current one is refused", () => {
-    const r = run(["--period=3"], { events: farAway(), rosters: [BEFORE] });
+    const r = run(["--period=3"], { events: laterGame(), rosters: [BEFORE] });
     assert.equal(r.status, 1);
     assert.match(r.out, /before ESPN's current period/);
   });
 
   test("an explicit --period newer than current is used for the read", () => {
-    const r = run(["--period=9"], { events: farAway(), rosters: [BEFORE, BEFORE] });
+    const r = run(["--period=9"], { events: laterGame(), rosters: [BEFORE, BEFORE] });
     const reads = r.calls.filter((c) => c.method === "GET" && c.url.includes("lm-api-reads") && c.params);
     assert.ok(reads.some((c) => c.params.scoringPeriodId === 9));
   });
 });
 
 describe("--auto (scheduled run)", () => {
-  test("exits quietly when no game kicks off inside the window", () => {
-    const r = run(["--auto"], { events: farAway(), rosters: [BEFORE] });
-    assert.equal(r.status, 0);
-    assert.match(r.out, /Nothing to do/);
-    assert.equal(r.posts.length, 0);
-  });
-
-  test("when a kickoff is inside the window, sends the lineup change", () => {
-    const r = run(["--auto"], { events: inWindow(), rosters: [BEFORE, BEFORE, AFTER] });
+  test("optimizes and sends the change when a game kicks off soon", () => {
+    const r = run(["--auto"], { events: soonGame(), rosters: [BEFORE, BEFORE, AFTER] });
     assert.equal(r.status, 0, r.out);
     assert.equal(r.posts.length, 1);
     assert.equal(r.posts[0].url.includes("lm-api-writes"), true);
@@ -194,13 +187,19 @@ describe("--auto (scheduled run)", () => {
   });
 
   test("the write call sends the cookies and a JSON content type", () => {
-    const r = run(["--auto"], { events: inWindow(), rosters: [BEFORE, BEFORE, AFTER] });
+    const r = run(["--auto"], { events: soonGame(), rosters: [BEFORE, BEFORE, AFTER] });
     assert.equal(r.posts[0].headers.Cookie, "SWID={TEST-SWID}; espn_s2=test-espn-s2");
     assert.equal(r.posts[0].headers["Content-Type"], "application/json");
   });
 
-  test("a kickoff in the window with nothing to change sends nothing", () => {
-    const r = run(["--auto"], { events: inWindow(), rosters: [AFTER] });
+  test("optimizes on every run: sends the change even when no game kicks off soon", () => {
+    const r = run(["--auto"], { events: laterGame(), rosters: [BEFORE, BEFORE, AFTER] });
+    assert.equal(r.status, 0, r.out);
+    assert.equal(r.posts.length, 1);
+  });
+
+  test("with nothing to change, sends nothing", () => {
+    const r = run(["--auto"], { events: soonGame(), rosters: [AFTER] });
     assert.equal(r.status, 0, r.out);
     assert.match(r.out, /already matches the optimum/);
     assert.equal(r.posts.length, 0);
@@ -208,14 +207,14 @@ describe("--auto (scheduled run)", () => {
 });
 
 describe("--write (manual run)", () => {
-  test("sends the change even outside a kickoff window", () => {
-    const r = run(["--write"], { events: farAway(), rosters: [BEFORE, BEFORE, AFTER] });
+  test("sends the change even when no game kicks off soon", () => {
+    const r = run(["--write"], { events: laterGame(), rosters: [BEFORE, BEFORE, AFTER] });
     assert.equal(r.status, 0, r.out);
     assert.equal(r.posts.length, 1);
   });
 
   test("exits 1 when the roster does not show the move after re-reading", () => {
-    const r = run(["--write"], { events: farAway(), rosters: [BEFORE] });
+    const r = run(["--write"], { events: laterGame(), rosters: [BEFORE] });
     assert.equal(r.posts.length, 1, "the write is still sent");
     assert.equal(r.status, 1);
     assert.match(r.out, /Mismatches after re-reading/);
@@ -224,7 +223,7 @@ describe("--write (manual run)", () => {
 
   test("a rejected write exits 1 and prints ESPN's error body", () => {
     const r = run(["--write"], {
-      events: farAway(),
+      events: laterGame(),
       rosters: [BEFORE],
       postError: { status: 409, data: { message: "locked" } },
     });
@@ -234,7 +233,7 @@ describe("--write (manual run)", () => {
   });
 
   test("never sends anything when no move is needed", () => {
-    const r = run(["--write"], { events: farAway(), rosters: [AFTER] });
+    const r = run(["--write"], { events: laterGame(), rosters: [AFTER] });
     assert.equal(r.status, 0);
     assert.equal(r.posts.length, 0);
   });
@@ -257,46 +256,46 @@ describe("gaps: spots that cannot be filled well", () => {
   };
 
   test("an unfilled spot fails the run with a GitHub error annotation naming the spot", () => {
-    const r = run([], { events: farAway(), rosters: [noQB()], kona: KONA });
+    const r = run([], { events: laterGame(), rosters: [noQB()], kona: KONA });
     assert.equal(r.status, 1, r.out);
     assert.match(r.stdout, /::error title=Lineup gap::QB: no eligible player is left for this spot/);
   });
 
   test("a starter projecting 0 points fails the run and names the player", () => {
-    const r = run([], { events: farAway(), rosters: [byeQB()], kona: KONA });
+    const r = run([], { events: laterGame(), rosters: [byeQB()], kona: KONA });
     assert.equal(r.status, 1, r.out);
     assert.match(r.stdout, /::error title=Lineup gap::QB: Burrow projects 0 points/);
   });
 
   test("suggests the best free agent for the spot and a drop candidate", () => {
-    const r = run([], { events: farAway(), rosters: [noQB()], kona: KONA });
+    const r = run([], { events: laterGame(), rosters: [noQB()], kona: KONA });
     assert.match(r.out, /Pickup for QB: Free Agent QB \(15\.5 pts, 22\.1% owned\)/);
     assert.match(r.out, /Drop candidate: RB Bench \(0\.5% started, 12\.0% owned/);
   });
 
   test("the free agent lookup uses the slot's filter", () => {
-    const r = run([], { events: farAway(), rosters: [noQB()], kona: KONA });
+    const r = run([], { events: laterGame(), rosters: [noQB()], kona: KONA });
     const read = r.calls.find((c) => c.params && c.params.view === "kona_player_info");
     assert.ok(read, "a free agent lookup happened");
     assert.deepEqual(JSON.parse(read.headers["X-Fantasy-Filter"]).players.filterSlotIds.value, [0]);
   });
 
   test("a failed free agent lookup is reported, and the gap still fails the run", () => {
-    const r = run([], { events: farAway(), rosters: [noQB()], konaError: "ESPN is down" });
+    const r = run([], { events: laterGame(), rosters: [noQB()], konaError: "ESPN is down" });
     assert.equal(r.status, 1);
     assert.match(r.out, /Pickup lookup for QB failed: ESPN is down/);
     assert.match(r.stdout, /::error title=Lineup gap::QB/);
   });
 
-  test("a gap inside a kickoff window still writes the best lineup, then fails", () => {
-    const r = run(["--auto"], { events: inWindow(), rosters: [noQB(), noQB(), noQB()], kona: KONA });
+  test("a gap on a scheduled run still writes the best lineup, then fails", () => {
+    const r = run(["--auto"], { events: soonGame(), rosters: [noQB(), noQB(), noQB()], kona: KONA });
     assert.equal(r.posts.length, 1, "the best lineup is still sent");
     assert.equal(r.status, 1);
     assert.match(r.stdout, /::error title=Lineup gap::QB/);
   });
 
   test("a full, scoring lineup has no gaps and no suggestions", () => {
-    const r = run([], { events: farAway(), rosters: [AFTER], kona: KONA });
+    const r = run([], { events: laterGame(), rosters: [AFTER], kona: KONA });
     assert.equal(r.status, 0, r.out);
     assert.doesNotMatch(r.stdout, /::error/);
     assert.doesNotMatch(r.out, /=== SUGGESTIONS ===/);
@@ -313,20 +312,20 @@ describe("failure paths", () => {
   });
 
   test("a team that is not in the league stops the run", () => {
-    const r = run([], { events: farAway(), rosters: [fx.rosterResponse({ teamId: 99 })] });
+    const r = run([], { events: laterGame(), rosters: [fx.rosterResponse({ teamId: 99 })] });
     assert.equal(r.status, 1);
     assert.match(r.out, /Team 10 not found/);
   });
 
   test("a league with no roster response stops the run", () => {
-    const r = run([], { events: farAway(), rosters: [{ teams: [] }] });
+    const r = run([], { events: laterGame(), rosters: [{ teams: [] }] });
     assert.equal(r.status, 1);
     assert.match(r.out, /No team data/);
   });
 
   test("missing config stops the run before any network call", () => {
     // An empty value, not an absent one: dotenv would fill an absent value from a local .env file.
-    const r = run([], { events: farAway(), rosters: [BEFORE] }, { LEAGUE_ID: "" });
+    const r = run([], { events: laterGame(), rosters: [BEFORE] }, { LEAGUE_ID: "" });
     assert.equal(r.status, 1);
     assert.match(r.out, /Missing LEAGUE_ID, TEAM_ID, SWID or ESPN_S2/);
     assert.equal(r.calls.length, 0);
@@ -335,7 +334,7 @@ describe("failure paths", () => {
   test("a missing ESPN period in the response stops the run", () => {
     const noPeriod = fx.rosterResponse();
     delete noPeriod.status;
-    const r = run([], { events: farAway(), rosters: [noPeriod] });
+    const r = run([], { events: laterGame(), rosters: [noPeriod] });
     assert.equal(r.status, 1);
     assert.match(r.out, /no status\.latestScoringPeriod/);
   });

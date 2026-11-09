@@ -39,7 +39,7 @@ jobs:
           DRY_RUN: ${{ inputs.dry_run }}
         run: |
           if [ "$EVENT" = "schedule" ]; then
-            node optimize.js --auto          # only acts inside a kickoff window
+            node optimize.js --auto          # every scheduled run: optimize and write
           elif [ "$DRY_RUN" = "true" ]; then
             node optimize.js                 # manual: print the plan, send nothing
           else
