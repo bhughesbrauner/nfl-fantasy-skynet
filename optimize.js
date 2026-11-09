@@ -5,8 +5,7 @@ const axios = require("axios");
 //   node optimize.js              prints the optimized lineup and the moves, sends nothing
 //   node optimize.js --write      also sends the moves to ESPN, then re-reads the roster to check them
 //   node optimize.js --period=5   optimizes for scoring period 5 instead of ESPN's current period
-//   node optimize.js --auto       for the scheduled workflow: exits unless a game kicks off within the
-//                                 next 75 minutes, then writes (same as --write)
+//   node optimize.js --auto       for the scheduled workflow: optimizes and writes on every run (same as --write)
 //
 // Players whose NFL team has a game in progress or finished are locked. They stay in their current
 // slot and the rest of the lineup is optimized around them.
@@ -37,9 +36,6 @@ const WRITES_URL = `https://lm-api-writes.fantasy.espn.com/apis/v3/games/ffl/sea
 
 // Public ESPN scoreboard for the current NFL week. No auth.
 const SCOREBOARD_URL = "https://site.api.espn.com/apis/site/v2/sports/football/nfl/scoreboard";
-// The planner schedules runs 60 minutes before kickoff (rounded down to 5 minutes), so the window
-// is wider than 60 to cover that rounding and any delay in GitHub starting the run.
-const WINDOW_MINUTES = 75;
 
 const COOKIE = `SWID=${SWID}; espn_s2=${ESPN_S2}`;
 
@@ -107,20 +103,6 @@ async function fetchTeam(period) {
 async function fetchScoreboard() {
   const { data } = await axios.get(SCOREBOARD_URL);
   return data.events || [];
-}
-
-// True when a game has not kicked off yet and starts within WINDOW_MINUTES.
-function kickoffInWindow(events, now = Date.now()) {
-  const soon = events.filter((e) => {
-    if (e.status?.type?.state !== "pre") return false;
-    const minutes = (Date.parse(e.date) - now) / 60000;
-    return minutes > 0 && minutes <= WINDOW_MINUTES;
-  });
-  soon.forEach((e) => {
-    const minutes = Math.round((Date.parse(e.date) - now) / 60000);
-    console.log(`Kickoff in ${minutes} min: ${e.shortName} (${e.date})`);
-  });
-  return soon.length > 0;
 }
 
 // NFL team IDs whose game has started (in progress or final). Their players are locked.
@@ -415,14 +397,9 @@ async function main() {
     throw new Error("Missing LEAGUE_ID, TEAM_ID, SWID or ESPN_S2 in .env");
   }
 
-  // The scoreboard decides both the trigger window and which players are locked.
-  // If it can't be read, the run stops rather than guess at locks.
+  // The scoreboard decides which players are locked. If it can't be read, the run stops rather
+  // than guess at locks.
   const events = await fetchScoreboard();
-
-  if (AUTO && !kickoffInWindow(events)) {
-    console.log(`No kickoff in the next ${WINDOW_MINUTES} minutes. Nothing to do.`);
-    return;
-  }
 
   // First read gives ESPN's current period, unless --period was passed.
   const probe = await fetchTeam(undefined);
@@ -528,7 +505,6 @@ if (require.main === module) {
 module.exports = {
   BENCH,
   IR,
-  WINDOW_MINUTES,
   seasonFor,
   getProjectedPoints,
   fetchTeam,
@@ -540,7 +516,6 @@ module.exports = {
   unknownSlotPlayers,
   buildLineupBody,
   lockedTeamIds,
-  kickoffInWindow,
   verify,
   findGaps,
   formatGap,
