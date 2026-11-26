@@ -5,8 +5,6 @@ on:
     # Entries between the markers are written by plan-schedule.js (see plan-schedule.yml).
     # Edit by hand only if you also stop the planner. The placeholder fires once a year and does nothing.
     # BEGIN generated schedule
-    - cron: "0 0 26 11 *"
-    - cron: "0 17 26 11 *"
     - cron: "0 17 29 11 *"
     - cron: "0 19 27 11 *"
     - cron: "15 0 1 12 *"
